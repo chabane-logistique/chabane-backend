@@ -44,47 +44,55 @@ function adminOnly(req, res, next) {
   next();
 }
 
+// إرسال OTP
 app.post("/api/auth/send-otp", async (req, res) => {
   const { phone } = req.body;
-  const intlPhone = phone.startsWith("0") ? "+213" + phone.slice(1) : phone;
+  const intlPhone = phone.replace(/\s/g,"").startsWith("0")
+    ? "+213" + phone.replace(/\s/g,"").slice(1)
+    : phone.replace(/\s/g,"");
+
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  const expires = new Date(Date.now() + 5 * 60 * 1000);
+  const expires = new Date(Date.now() + 10 * 60 * 1000); // 10 دقائق
 
-  await supabase.from("otp_codes").upsert({
-    phone: intlPhone, code: otp,
-    expires_at: expires.toISOString(), attempts: 0,
-  }, { onConflict: "phone" });
+  // احذف القديم وأضف الجديد
+  await supabase.from("otp_codes").delete().eq("phone", intlPhone);
+  await supabase.from("otp_codes").insert({
+    phone: intlPhone,
+    code: otp,
+    expires_at: expires.toISOString(),
+    attempts: 0,
+  });
 
-  try {
-    await twilioClient.messages.create({
-      from: `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`,
-      to: `whatsapp:${intlPhone}`,
-      body: `رمز التحقق لـ Chabane Logistique: *${otp}*\nصالح لمدة 5 دقائق.`,
-    });
-  } catch (e) {
-    console.log("WhatsApp not configured yet - OTP:", otp);
-  }
-
-  res.json({ success: true, otp });
+  console.log(`OTP for ${intlPhone}: ${otp}`);
+  res.json({ success: true, otp, phone: intlPhone });
 });
 
+// التحقق من OTP
 app.post("/api/auth/verify-otp", async (req, res) => {
   const { phone, otp } = req.body;
-  const intlPhone = phone.startsWith("0") ? "+213" + phone.slice(1) : phone;
+  const intlPhone = phone.replace(/\s/g,"").startsWith("0")
+    ? "+213" + phone.replace(/\s/g,"").slice(1)
+    : phone.replace(/\s/g,"");
 
-  const { data: otpData } = await supabase
-    .from("otp_codes").select("*").eq("phone", intlPhone).single();
+  console.log(`Verify: phone=${intlPhone} otp=${otp}`);
 
-  if (!otpData) return res.status(400).json({ error: "رمز غير موجود" });
-  if (otpData.attempts >= 5) return res.status(429).json({ error: "تجاوزت المحاولات" });
+  const { data: rows } = await supabase
+    .from("otp_codes")
+    .select("*")
+    .eq("phone", intlPhone);
+
+  console.log(`Found rows:`, rows);
+
+  if (!rows || rows.length === 0)
+    return res.status(400).json({ error: "رمز غير موجود — أعد الإرسال" });
+
+  const otpData = rows[0];
   if (new Date() > new Date(otpData.expires_at))
-    return res.status(400).json({ error: "انتهت صلاحية الرمز" });
-  if (otpData.code !== otp) {
-    await supabase.from("otp_codes")
-      .update({ attempts: otpData.attempts + 1 }).eq("phone", intlPhone);
+    return res.status(400).json({ error: "انتهت صلاحية الرمز — أعد الإرسال" });
+  if (otpData.code !== otp.trim())
     return res.status(400).json({ error: "رمز خاطئ" });
-  }
 
+  // جلب أو إنشاء المستخدم
   let { data: user } = await supabase
     .from("users").select("*").eq("phone", intlPhone).single();
 
@@ -103,9 +111,8 @@ app.post("/api/auth/verify-otp", async (req, res) => {
   );
 
   await supabase.from("otp_codes").delete().eq("phone", intlPhone);
-  res.json({ token, user: { id: user.id, name: user.full_name, role: user.role } });
+  res.json({ token, user: { id: user.id, name: user.full_name||"", role: user.role } });
 });
-
 app.post("/api/drivers/register", async (req, res) => {
   const { name, phone, vehicleType, plate } = req.body;
   const intlPhone = phone.startsWith("0") ? "+213" + phone.slice(1) : phone;
