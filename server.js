@@ -44,18 +44,20 @@ function adminOnly(req, res, next) {
   next();
 }
 
-// إرسال OTP
 app.post("/api/auth/send-otp", async (req, res) => {
   const { phone } = req.body;
-  const intlPhone = phone.replace(/\s/g,"").startsWith("0")
-    ? "+213" + phone.replace(/\s/g,"").slice(1)
-    : phone.replace(/\s/g,"");
+  
+  // تنظيف وتحويل الرقم
+  const clean = phone.replace(/\s/g, "");
+  const intlPhone = clean.startsWith("0") ? "+213" + clean.slice(1) : clean;
 
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  const expires = new Date(Date.now() + 10 * 60 * 1000); // 10 دقائق
+  const expires = new Date(Date.now() + 10 * 60 * 1000);
 
-  // احذف القديم وأضف الجديد
+  // احذف أي رمز قديم أولاً
   await supabase.from("otp_codes").delete().eq("phone", intlPhone);
+  
+  // أضف الجديد
   await supabase.from("otp_codes").insert({
     phone: intlPhone,
     code: otp,
@@ -63,34 +65,36 @@ app.post("/api/auth/send-otp", async (req, res) => {
     attempts: 0,
   });
 
-  console.log(`OTP for ${intlPhone}: ${otp}`);
+  console.log(`✅ OTP saved: phone=${intlPhone} code=${otp}`);
   res.json({ success: true, otp, phone: intlPhone });
 });
-
-// التحقق من OTP
 app.post("/api/auth/verify-otp", async (req, res) => {
   const { phone, otp } = req.body;
-  const intlPhone = phone.replace(/\s/g,"").startsWith("0")
-    ? "+213" + phone.replace(/\s/g,"").slice(1)
-    : phone.replace(/\s/g,"");
+  
+  const clean = phone.replace(/\s/g, "");
+  const intlPhone = clean.startsWith("0") ? "+213" + clean.slice(1) : clean;
 
-  console.log(`Verify: phone=${intlPhone} otp=${otp}`);
+  console.log(`🔍 Verify: phone=${intlPhone} otp=${otp}`);
 
-  const { data: rows } = await supabase
+  // ابحث بدون .single()
+  const { data: rows, error } = await supabase
     .from("otp_codes")
     .select("*")
-    .eq("phone", intlPhone);
+    .eq("phone", intlPhone)
+    .limit(1);
 
-  console.log(`Found rows:`, rows);
+  console.log(`📋 Found:`, rows, `Error:`, error);
 
   if (!rows || rows.length === 0)
-    return res.status(400).json({ error: "رمز غير موجود — أعد الإرسال" });
+    return res.status(400).json({ error: "رمز غير موجود — اضغط إعادة الإرسال" });
 
   const otpData = rows[0];
+
   if (new Date() > new Date(otpData.expires_at))
-    return res.status(400).json({ error: "انتهت صلاحية الرمز — أعد الإرسال" });
-  if (otpData.code !== otp.trim())
-    return res.status(400).json({ error: "رمز خاطئ" });
+    return res.status(400).json({ error: "انتهت صلاحية الرمز" });
+
+  if (otpData.code !== otp.toString().trim())
+    return res.status(400).json({ error: `رمز خاطئ` });
 
   // جلب أو إنشاء المستخدم
   let { data: user } = await supabase
@@ -111,7 +115,11 @@ app.post("/api/auth/verify-otp", async (req, res) => {
   );
 
   await supabase.from("otp_codes").delete().eq("phone", intlPhone);
-  res.json({ token, user: { id: user.id, name: user.full_name||"", role: user.role } });
+  
+  res.json({ 
+    token, 
+    user: { id: user.id, name: user.full_name||"", role: user.role } 
+  });
 });
 app.post("/api/drivers/register", async (req, res) => {
   const { name, phone, vehicleType, plate } = req.body;
